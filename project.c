@@ -1,3 +1,4 @@
+//Enable or disable debug output
 #ifdef DEBUG
 #define TRACE(...) fprintf(stderr,__VA_ARGS__)
 #else
@@ -6,38 +7,59 @@
 
 #include "type.h"
 
+//In-memory inode table
 MINODE minode[NMINODES];
+//Pointer to root inode of the file system
 MINODE *root;
+//Process table and pointer to active process
 PROC proc[NPROC], *running;
+//Mount table
 MOUNT mounttab[5];
 OFT oftable[NOFT];
 
+//Space to store the names of directories
 char names[64][128], *name[64];
-//ELLIOT USED DEV FOR SOME OF THE LEVEL ONE STUFF
+
+//File descriptor, device number, and 
 int fd, dev, n;
-int nblocks, ninodes, bmap, imap, inode_start, iblock;
+//Number of blocks and number of inodes 
+int nblocks, ninodes;
+//block bitmap and inode bitmap
+int bmap, imap;
+//
+int inode_start, iblock;
+//Buffers to store the pathname and the parameters of a command
 char pathname[256], parameter[256];
 
+//Buffers to store user input and then the name of the command passed in
 char line[128], cname[64];
+
+//Function pointer table to execute commands
 void (*p[34]) (void);
 
+//Function prototypes for get_block and put_block
 int get_block (int dev, int blk, char *buf);
 int put_block (int dev, int blk, char *buf);
 
+//Table of command names to easily get an index to use in the function pointer table
 char *cmd[] = { "menu", "mkdir", "cd", "pwd", "ls", "rmdir", "creat", "link", "unlink", "symlink", "rm", "chmod", "chown", 
 	"stat", "touch", "open", "close", "pfd", "lseek", "access", "read", "write", "cat", "cp", "mv", "mount", "umount", "cs",  "fork", 
 	"ps", "sync", "quit",  0 };
 
+//File permission templates to allow for easily printing file definitions
 char *t1 = "xwrxwrxwr-------";
 char *t2 = "----------------";
+//String to easily convert a single digit integer to its ASCII value
 char *d = "0123456789";
-//char *disk = "mydisk";
 
+//Mount the root inode of the given disk
 mount_root (char *disk)
 {
 	TRACE ("IN MOUNT_ROOT\n");
+	//Buffer to store the super block
 	char super[BLKSIZE];
-
+	
+	//Open the given disk
 	dev = open (disk, O_RDWR);
 	TRACE ("Dev: %d\n", dev);
 	
@@ -49,14 +71,16 @@ mount_root (char *disk)
 	if (sp->s_magic != 0xEF53)
 	{
 		printf ("File system is not EXT2\n");
-		exit (1);
+		exit (1); //Exit if it is not an EXT2 file system
 	}
 
+	//Read the root inode into memory and set it as the working directory for processes 0 and 1
 	root =  (MINODE *) iget (dev, 2);	
 	proc[0].cwd = (MINODE *) iget (dev, 2);
 	proc[1].cwd = (MINODE *) iget (dev, 2);
 }
 
+//Print out a menu for the user
 void menu(){
     printf("K.C. Fan Club FileSystem\n"
            "Please enter one of the following options:\n"
@@ -70,14 +94,15 @@ void menu(){
              );
 }
 
+//Take the command name and get its index in the function pointer table
 int findCmd()
 {
     int i = 0;
 
 	TRACE ("IN findCmd\n");
-
-    while (cmd[i]){
-
+	
+    while (cmd[i])
+	{
         if (strcmp(cname, cmd[i]) == 0)
             return i; //return index of command.
         i++;
@@ -86,13 +111,18 @@ int findCmd()
     return i; //invalid command. return "default"
 }
 
+//Enter the name of a file/directory into a parent directory
+//pip is a pointer to the parent's inode
+//myino is the child's inode number
+//myname is the child's name
 int enter_name(MINODE *pip, int myino, char *myname)
 {
 	TRACE ("IN enter_name\n");
 
     int x = 0;
 	char buf[BLKSIZE];
-
+	
+	//Calulate how much space the child needs in the parent's directory iblocks
 	int need_len = 4*((8+strlen(myname)+3)/4);
 	int remain;
 
@@ -102,13 +132,12 @@ int enter_name(MINODE *pip, int myino, char *myname)
 
 	for (x = 0; x < 12; x++) //go through all direct blocks.
 	{
-		if (pip->dINODE.i_block[x] == 0) //create new block.
+		if (pip->dINODE.i_block[x] == 0) //create new block if no data exists
 		{
 			bno = balloc(dev);
 			pip->dINODE.i_block[x] = bno;
 			pip->dINODE.i_size += BLKSIZE;
 
-			//TRACE ("enter_name 1 ");
 			memset (buf, 0, BLKSIZE);
 			dp = (DIR *)&(buf[0]);
 			dp->inode = myino;
@@ -120,19 +149,21 @@ int enter_name(MINODE *pip, int myino, char *myname)
 			return 1;
 		}
 
-		//TRACE ("enter_name 2 ");
+		//Get the i_block from disk
 		get_block(dev, pip->dINODE.i_block[x], buf);
 		cp = buf;
 		dp = (DIR *)cp;
-
-		while (cp + dp->rec_len < buf+BLKSIZE) //go to last entry in block.
+		
+		//Go to the last entry in block.
+		while (cp + dp->rec_len < buf+BLKSIZE) 
 		{	
 			cp += dp->rec_len;
 			dp = (DIR *)cp;
 		}
 
 		remain = dp->rec_len - (4*((8 + dp->name_len + 3)/4)); //rec_len - ideal_len
-
+		
+		//If there's enough space left in the i_block, then add the name in this block
 		if (remain > need_len)
 		{
 			dp->rec_len = (4*((8 + dp->name_len + 3)/4)); //change len to IDEAL length
@@ -150,6 +181,9 @@ int enter_name(MINODE *pip, int myino, char *myname)
 	return -1;
 }
 
+//Create a directory.
+//pip is a pointer to the parent inode
+//name is the name of the new directory
 void mymkdir(MINODE *pip, char name[256]){
 	TRACE ("IN mymkdir\n");
 
@@ -160,47 +194,67 @@ void mymkdir(MINODE *pip, char name[256]){
     char *cp;
     DIR *mydir;
 
+	//Get a new inode and block for the new directory
     ino = ialloc(dev);
     bno = balloc(dev);
 
+	//Get the inode from disk into memory
     mip = (MINODE *)iget(dev, ino);
 
-    mip->dINODE.i_mode = DIR_MODE;                        //DIR type and permissions
-    mip->dINODE.i_uid = running->uid;                //Owner uid
-    mip->dINODE.i_gid = running->gid;       //Group Id
-    mip->dINODE.i_size = BLKSIZE;                        //Size in bytes
-    mip->dINODE.i_links_count = 2;                    //Links count = 2 because of . and ..
-    mip->dINODE.i_atime = mip->dINODE.i_ctime = mip->dINODE.i_mtime = time(0L); //set to current time
-    mip->dINODE.i_blocks = 2;                                //LINUX: Blocks count in 512-byte chunks
+	//Mark that it's a directory and default permissions
+    mip->dINODE.i_mode = DIR_MODE;
+	//Set the directory's User ID and Group ID
+    mip->dINODE.i_uid = running->uid;
+    mip->dINODE.i_gid = running->gid;
+	//Set the size in bytes
+    mip->dINODE.i_size = BLKSIZE;
+	//Set link count to 2 because of . and ..
+    mip->dINODE.i_links_count = 2;
+	//Set access, creation, and modification time to current time
+    mip->dINODE.i_atime = mip->dINODE.i_ctime = mip->dINODE.i_mtime = time(0L);
+	//Set number of blocks
+    mip->dINODE.i_blocks = 2;
+	//Record it's first block number
     mip->dINODE.i_block[0] = bno;                    //new DIR has one data block
 
+	//Empty out the rest of the i_block numbers
     for (x = 1; x<15; x++)
     {
         mip->dINODE.i_block[x] = 0;
     }
 
-    mip->dirty = 1;                         //flag as dirty
-
-    mydir = (DIR *)buf; //write .
+	//Flag the inode as dirty so it gets written back to disk later
+    mip->dirty = 1;
+	
+	//Create directory entry for .
+    mydir = (DIR *)buf; 
     mydir->inode = ino;
     mydir->rec_len = 12;
     mydir->name_len = 1;
     mydir->name[0] = '.';
     cp = buf + mydir->rec_len;
-    mydir = (DIR *)cp; //write ..
+	
+	//Create directory entry for ..
+    mydir = (DIR *)cp;
     mydir->inode = pip->ino;
     mydir->rec_len = 1012;
     mydir->name_len = 2;
     mydir->name[0] = '.';
     mydir->name[1] = '.';
 
+	//Write the directory block back to disk
 	put_block(dev, mip->dINODE.i_block[0], buf);
 
+	//Enter the name of the new directory into its parent directory
     enter_name(pip, ino, name);
+	//Put the in-memory inode back to disk
 	iput(mip);
 }
 
-int SearchForChild(INODE *dinode, char child[256]) //Takes the parent inode, and the name of the child searching for.
+//Return the inode number of a file/directory
+//dinode is the parent directory to search in
+//child is the name of the file/directory to search for
+int SearchForChild(INODE *dinode, char child[256]) 
 {
 	TRACE ("IN SearchForChild: %s\n", child);
 
@@ -235,6 +289,10 @@ int SearchForChild(INODE *dinode, char child[256]) //Takes the parent inode, and
     return 0;
 }
 
+//Make a directory
+//This function handles finding where the new directory should be added and 
+//making sure a file/directory there does not already have the same name
+//Then it call mymkdir() to finish creating the new directory
 void make_dir(){
 	TRACE ("IN make_dir\n");
 
@@ -243,17 +301,19 @@ void make_dir(){
 	int pino;
 	MINODE *pip;
 
-	if (pathname[0] ==  0) //no pathname.
+	//No path was specified, ie user entered only "mkdir"
+	if (pathname[0] ==  0)
 	{
 		fprintf(stderr, "Error: No pathname specified.\n");
 		return;
 	}
 
-	if (pathname[0] == '/') //absolute
+	//The user entered an absolute file path
+	if (pathname[0] == '/') 
 	{
 		dev = root->dev;
 	}
-	else //relative
+	else //A relative file path was entered
 	{
 		dev = running->cwd->dev;
 	}
@@ -264,63 +324,71 @@ void make_dir(){
 	child = basename(temp);
 	//strcpy (child, basename(pathname));
 	
+	//Get the inode number of the parent
 	pino = getino(&dev, parent);
-	if (pino < 2)
+	if (pino < 2) //Make sure it's a valid inode number
 	{
 		fprintf (stderr, "Error: Bad path specified\n");
 		return;
 	}
 
+	//Get the inode of the parent
 	pip = (MINODE *)iget(dev, pino);
 
-	if ((pip->dINODE.i_mode & 0x4000)>1 && !SearchForChild(&(pip->dINODE), child)){ //check to see if it is a directory or not AND check to see
-		//if the child exists in this directory.
-
+	//Make sure it is a directory and then make sure a file/directory with the same name does not exist
+	if ((pip->dINODE.i_mode & 0x4000)>1 && !SearchForChild(&(pip->dINODE), child)){ 
+		//Make the directory
 		mymkdir(pip, child);
-
+		
+		//Increment the link count to the parent inode
         pip->dINODE.i_links_count++;
+		//Mark it as dirty
         pip->dirty = 1;
 	}
+	//Put the parent inode back to disk
     iput(pip);
 }
 
+//Change the current working directory
 void change_dir(){
 	TRACE ("IN change_dir\n");
 
 	int ino;
 	MINODE *mp;
 
-	ino = getino(&dev, pathname); //grab the inode of the directory you want to switch to.
+	//Get the inode number of the specified directory
+	ino = getino(&dev, pathname); 
 
-	if (ino < 2) //if invalid, return.
+	//Make sure it's valid
+	if (ino < 2) 
 	{
 		fprintf (stderr, "Error: Directory does not exist\n");
 		return;
 	}
 
+	//Get the inode of the directory
 	mp = (MINODE *) iget(dev, ino);
-	iput (running->cwd);
 
 	TRACE ("Test: %d\n", mp->dINODE.i_mode & 0x4000);
-
+	
+	//Make sure it is actually a directory and not a file
 	if ((mp->dINODE.i_mode & 0x4000) == 0)
 	{
 		fprintf (stderr, "Error: Not a directory\n");
 		return;
 	}
-
+	
+	//Put back the original working directory
+	iput (running->cwd);
+	//Switch to the new one
 	running->cwd = mp;
-
-	/*int i;
-	TRACE ("Datablocks of %d\n", running->cwd->ino);
-	for (i = 0; i < 12; i++)
-		TRACE ("%d ", running->cwd->dINODE.i_block[i]);
-		TRACE ("\n");*/
 
 	return;
 }
 
+//Recursive function for printing out the current working directory
 void rpwd(MINODE *cwd){
+	//If the cwd is root, just return
 	if (cwd->ino == 2)
 		return;
 
@@ -331,31 +399,41 @@ void rpwd(MINODE *cwd){
 	int pino;
 	int cino;
 
+	//Get the first data block of the current directory
 	get_block(dev, cwd->dINODE.i_block[0], buf);
 
 	char *cp = buf;
 	DIR *dp = (DIR *)cp;
 
+	//Get its inode number through the . entry
 	cino = dp->inode;
 
 	cp += dp->rec_len;
 	dp = (DIR *)cp;
 
+	//Get its parent inode number through the .. entry
 	pino = dp->inode;
 
 	TRACE ("%d %d\n", cino, pino);
 
+	//Get the parent inode
 	MINODE *mp = (MINODE *) iget (dev, pino);
 
 	TRACE ("%x\n", mp);
 
+	//Recursive call to continue printing
 	rpwd(mp);
-	findmyname (mp, cino, tname); //get the name of this entry
-	printf("/%s", tname); //print "/name"
+	
+	//Get the name of this directory
+	findmyname (mp, cino, tname); 
+	//Print it out
+	printf("/%s", tname);
 
-	iput(mp); //put the mp back just in case.
+	//put the parent inode back
+	iput(mp);
 }
 
+//Print the working directory
 void pwd(){
 	TRACE ("IN pwd\n");
 
@@ -364,6 +442,7 @@ void pwd(){
 	putchar('\n');
 }
 
+//Print out the data of the given inode
 void print_inode(MINODE *entry)
 {
 	char timehold[64];
@@ -394,6 +473,7 @@ void print_inode(MINODE *entry)
 	printf ("%s ", timehold); //Print out the modify time
 }
 
+//List the entries of the given or current directory
 void list_dir(){
 	TRACE ("IN list_dir\n");
 
@@ -417,11 +497,14 @@ void list_dir(){
 		ino = getino (&dev, pathname);	
 	}	
 
+	//Make sure it's a valid inode number
 	if (ino < 2)
 	{
 		fprintf (stderr, "Error: Bad path specified\n");
 		return;
 	}
+	
+	//Get the inode of the given directory
 	mip = (MINODE *) iget (dev, ino);
 
 	//Iterate through the direct blocks
@@ -431,35 +514,46 @@ void list_dir(){
 			break;
 
 		//TRACE ("list_dir ");
+		//Get the data block from the disk and prepare to read through it
 		get_block (dev, mip->dINODE.i_block[i], buf);
 		cp = buf;
 		dp = (DIR *)buf;
 
+		//Read each entry in the block
 		while (cp < buf + BLKSIZE)
 		{
+			//Get the name of the current entry
 			np = (char *) malloc (sizeof(char) * (dp->name_len + 1)); 
 			strncpy (np, dp->name, dp->name_len);
 
 			np[dp->name_len] = 0;
 
+			//Get the inode of the entry
 			MINODE *entry = (MINODE *) iget (dev, dp->inode);
 
 			TRACE ("%d %d ", dp->inode, entry->refCount);
 
+			//Print out the inode and its name
 			print_inode(entry);
 			printf ("%s\n", np);
 			
+			//Put the inode back where we found
 			iput(entry);
+			//Free the memory used to store the name
 			free(np);
+			
+			//Move on to the next entry
 			cp += dp->rec_len;
 			dp = (DIR *)cp;
 		}
 		putchar('\n');
 	}
-
+	
+	//Put back the inode for the directory we're listing
 	iput (mip);
 }
 
+//Remove a child of a directory
 int rm_child (MINODE *parent, char *name)
 {
 	TRACE ("IN rm_child %s\n", name);
@@ -471,30 +565,36 @@ int rm_child (MINODE *parent, char *name)
     DIR *dir = (DIR *)tempCount;
 
 	TRACE ("Start: %d\n", tempCount);
-
-    for (x = 0; x<12; x++) //check direct blocks
+	
+	//Check direct blocks
+    for (x = 0; x<12; x++) 
     {
+		//Clear the storage buffer first
 		memset (BLK, 0, BLKSIZE);
-        get_block( dev, parent->dINODE.i_block[x], BLK); //get block
+		//Get the data block from disk
+        get_block( dev, parent->dINODE.i_block[x], BLK);
 
 		tempCount = BLK;
 		dir = (DIR *) tempCount;
 
+		//Look through the entire block
         while (tempCount < BLK + BLKSIZE)
-		{ //check whole block for inodes
-
+		{ 
             if (*tempCount == 0) //check to make sure data block is not null.
 			{
 				TRACE ("BLARGH\n");
                 return 0;
 			}
-
-            strncpy(tempname, dir->name, dir->name_len); //copy the name from dir and add a '0' to the end.
+			
+			//Copy the name from the directory block and append the null terminator
+            strncpy(tempname, dir->name, dir->name_len); 
             tempname[dir->name_len] = 0;
 
-            if (strcmp(tempname, name) == 0) //check to see if the tempname is the same as the child's name. If so, return 1 (child found)
+			//Check if this is the entry to be removed
+            if (strcmp(tempname, name) == 0)  
             {
 				TRACE ("Found child in block %d\n", x);
+				//Save the block it was found it and stop searching
 				i = x;
 				x = 12;
 				break; //Found the child
@@ -507,18 +607,22 @@ int rm_child (MINODE *parent, char *name)
     }
 
 	TRACE ("Out of search\n");
+	//If the child was not found, don't do anything else
 	if (i == 11 && tempCount == BLK + BLKSIZE)
 		return 0; //Child not found
 
-	if (tempCount == BLK && dir->rec_len == BLKSIZE) //If the it is the first and only entry in the block
+	//If the entry is the first and only entry in the data block,
+	if (tempCount == BLK && dir->rec_len == BLKSIZE) 
 	{
 		TRACE ("First entry\n");
 		//Decrement the size of the directory
 		parent->dINODE.i_size -= BLKSIZE;
 	
-		//Deallocate the block and shuffle the other blocks down
+		//Deallocate the block
 		bdealloc (dev, parent->dINODE.i_block[i]);
 		parent->dINODE.i_block[i] = 0;
+		
+		//Shuffle the other data blocks down, if necessary
 		while (x + 1 < 12)
 		{
 			if (parent->dINODE.i_block[i + 1] == 0)
@@ -526,24 +630,29 @@ int rm_child (MINODE *parent, char *name)
 			parent->dINODE.i_block[i] = parent->dINODE.i_block[i+1];
 			i++;
 		}
+		
 		parent->dINODE.i_block[i+1] = 0;
-		return 1; //Don't need to do any more
+		return 1; 
 	}
 	
+	//Quickly jot down the record length of the entry to be removed
 	int len = dir->rec_len;
 	TRACE ("len: %d\n", len);
-
-	if (tempCount + dir->rec_len >= BLK + BLKSIZE) //If it's the last entry
+	
+	//If it's the last entry in the block
+	if (tempCount + dir->rec_len >= BLK + BLKSIZE) 
 	{
 		TRACE ("Last entry\n");
 		char *cp = BLK;
 		dir = (DIR *) cp;
-
+		
+		//Go down to the second-to-last entry
 		while (cp + dir->rec_len < tempCount)
 		{
 			cp += dir->rec_len;
 			dir = (DIR *)cp;
 		}
+		//Just increase its record length by the length of the entry to be removed
 		dir->rec_len += len;
 	}
 	else //It's somewhere in the middle
@@ -551,19 +660,25 @@ int rm_child (MINODE *parent, char *name)
 		TRACE ("Somewhere in middle %d %d %d\n", tempCount, tempCount + len, BLK + BLKSIZE - (tempCount + len));
 
 		char *cp = BLK;
-		dir = (DIR *) cp;		
+		dir = (DIR *) cp;
+
+		//Go to the last entry in the block
 		while (cp + dir->rec_len < BLK + BLKSIZE)
 		{
 			cp += dir->rec_len;
 			dir = (DIR *) cp;
 		}
+		//Increase it's length by the length of the record to be removed
 		dir->rec_len += len;
 
+		//Shift the contents of the block up to remove the entry
 		memcpy(tempCount, tempCount + len, BLK + BLKSIZE - (tempCount + len));
 	}
 	
 	TRACE ("Final rec_len: %d\n", dir->rec_len);
+	//Put the data block back to disk
 	put_block (dev, parent->dINODE.i_block[i], BLK);
+	//Mark the inode as dirty
 	parent->dirty = 1;
 	return 1;
 }
@@ -575,16 +690,21 @@ void rmdir(){
 	int ino;
 	MINODE *mip;
 
+	//Make sure a directory was specified
 	if (pathname == 0 || strlen(pathname) == 0)
 	{
 		fprintf (stderr, "Error: No directory specified. (Don't remove root, please)\n");
 		return;
 	}
 
+	//Check if it's an absolute or relative path
 	if (pathname[0] == '/')
 		dev = root->dev;
+	
+	//Get the inode number of the directory to remove
 	ino = getino (&dev, pathname);
 
+	//Make sure it's a valid inode number
 	if (ino < 3)
 	{
 		fprintf (stderr, "Error: Invalid directory specified\n");
@@ -595,20 +715,21 @@ void rmdir(){
 	mip = (MINODE *) iget (dev, ino);
 
 	//Should check for permissions
-
 	if ((mip->dINODE.i_mode & 0x4000) == 0)	//Check if path is directory or not
 	{
 		fprintf (stderr, "Error: Specified file is not a directory\n");
 		return;
 	}
-
-	if (mip->refCount > 1) //Make sure no one else is using it
+	
+	//Make sure no one else is using it
+	if (mip->refCount > 1) 
 	{
 		fprintf (stderr, "Error: Directory is in use by other processes\n");
 		return;
 	}
-
-	if (mip->dINODE.i_links_count > 2) //Check if directory could be empty
+	
+	//Check if directory could be empty
+	if (mip->dINODE.i_links_count > 2) 
 	{
 		fprintf (stderr, "Error: Directory is not empty (Don't even try -r)\n");
 		return;
@@ -631,10 +752,12 @@ void rmdir(){
 		return;
 	}
 
-	//Clear the dir's i_block and inode.
+	//Clear the directory's data block
 	bdealloc(mip->dev, mip->dINODE.i_block[0]);
 	mip->dINODE.i_block[0] = 0;
-	idealloc(mip->dev, mip->ino); //Free the inode number for use again
+	
+	//Free the inode for use again
+	idealloc(mip->dev, mip->ino);
 	
 	char temp[256];
 	
@@ -663,13 +786,20 @@ void rmdir(){
 	mip->dINODE.i_mtime = time(0L);
 	mip->dINODE.i_dtime = time(0L);
 
+	//Mark the parent inode as dirty
 	pip->dirty = 1;
+	//Put it back to disk
 	iput (pip);
 
+	//Set the current directory's inode as dirty
 	mip->dirty = 1;
-	iput(mip); //Put the minode back
+	//Put it back to disk
+	iput(mip); 
 }
 
+//Create a file
+//pip is a pointer to the parent inode
+//child is a string with the name of the new file
 int mycreat(MINODE *pip, char *child)
 {
     TRACE ("IN mycreat: %s\n", child);
@@ -703,6 +833,8 @@ int mycreat(MINODE *pip, char *child)
     return 1;
 }
 
+//Create a file
+//This function verifies the location of the new file and then calls mycreat()
 int icreat(char path[])
 {
     TRACE ("IN icreat %s\n", pathname);
@@ -749,7 +881,9 @@ int icreat(char path[])
     return rval;
 }
 
-void creat_file(){ //Create a directory and then use file surgery to transform it to a file
+//Create a file
+//This function verifies the file creation process was successful
+void creat_file(){ 
 	TRACE ("IN creat_file %s\n", pathname);
 
 	char temp[256];
@@ -762,6 +896,7 @@ void creat_file(){ //Create a directory and then use file surgery to transform i
     else {printf("Creat failed\n");}
 }
 
+//Create a hard link to a file
 void link(){
 
 	int ino, npino;
@@ -808,6 +943,7 @@ void link(){
 	iput(mpip);
 }
 
+//Create a symbolic link
 void symlink(){
 	TRACE ("IN symlink\n");	
 
@@ -847,6 +983,7 @@ void symlink(){
 
 }
 
+//Delete a file
 void rm_file(){
 
 	int ino;
@@ -933,6 +1070,7 @@ void rm_file(){
 	iput (pip);
 }
 
+//Remove a hard link
 void unlink(){
 	int ino, pino;
 	MINODE *mp, *parent;
@@ -979,6 +1117,7 @@ void unlink(){
 	iput (parent);
 }
 
+//Change the permissions of a file
 void chmod_file(){
 	TRACE ("IN chmod_file\n");
 
@@ -997,13 +1136,14 @@ void chmod_file(){
 
 	sscanf(pathname, "%o", &temp); //grab the octal value from the string.
 	mip->dINODE.i_mode &= 0xFE00; //Preserve leading bits
-	mip->dINODE.i_mode |= temp; //change the priveledges of the file.
+	mip->dINODE.i_mode |= temp; //change the privileges of the file.
 
 	mip->dirty = 1;
 	iput(mip);
 	return;
 }
 
+//Change the owner of a file
 void chown_file(){
 	TRACE ("IN chown_file\n");
 
@@ -1029,6 +1169,7 @@ void chown_file(){
 	return;
 }
 
+//Print the info of a file
 void stat_file(){
 	TRACE ("IN stat_file\n");
 
@@ -1058,6 +1199,7 @@ void stat_file(){
 	iput (mip);
 }
 
+//Touch a file (update its modified time)
 void touch_file(){
 	TRACE ("IN touch_file\n");
 
@@ -1081,7 +1223,9 @@ void touch_file(){
 }
 
 /*Beginning of Level 2*/
-int truncate(MINODE *mip) //deallocates every block for an inode.
+
+//Deallocate every block for an inode
+int truncate(MINODE *mip) 
 {
     int x = 0;
     int *bp;
@@ -1152,7 +1296,9 @@ int truncate(MINODE *mip) //deallocates every block for an inode.
     return 1;
 }
 
-int my_open(char path[], int opentype ){ //called from anywhere
+//Open a file with the given access permissions
+int my_open(char path[], int opentype )
+{ 
     TRACE ("IN my_open\n");
 
     int ino;
@@ -1252,6 +1398,7 @@ int my_open(char path[], int opentype ){ //called from anywhere
     return i; //return index of running->fd[] where the file stuff is.
 }
 
+//Open a file. This function is the frontend for my_open()
 void open_file(){
 	TRACE ("IN open_file\n");
 
@@ -1263,7 +1410,9 @@ void open_file(){
     else { fprintf(stdout, "File Descriptor: %d\n", lfd); } //If successful}
 }
 
-void close_file(){
+//Close an open file
+void close_file()
+{
 	TRACE ("IN close_file %s\n", pathname); //Pathname should be file descriptor
 
     int lfd;
@@ -1305,7 +1454,9 @@ void close_file(){
     return;
 }
 
-void lseek_file(){ //returns -1 if invalid position
+//Seek in an open file
+void lseek_file()
+{ 
 	TRACE ("IN lseek_file\n");
 
     int lfd, position, originalposition;
@@ -1326,10 +1477,11 @@ void lseek_file(){ //returns -1 if invalid position
     op->offset = position; //set the new position
 
     return;// originalposition; //return old position
-
 }
 
-void pfd(){
+//Print out all the file descriptors of open files
+void pfd()
+{
 	TRACE ("IN pfd\n");
 	
 	int i;
@@ -1365,11 +1517,13 @@ void pfd(){
 	}
 }
 
-void access_file(){
+void access_file()
+{
 	TRACE ("IN access_file\n");
 	fprintf (stderr, "Error: This function is not implemented\n");	
 }
 
+//Read the data from an open file
 int myread(int lfd, char *buf, int nbytes)
 {
 	TRACE ("IN myread %d %d\n", lfd, nbytes);
@@ -1445,6 +1599,7 @@ int myread(int lfd, char *buf, int nbytes)
 	return count;
 }
 
+//Read from a file. This is the front end for myread()
 void read_file(){ //assumes pathname is filedescriptor, and second is number of bytes to read
 	TRACE ("IN read_file\n");
 
@@ -1472,6 +1627,7 @@ void read_file(){ //assumes pathname is filedescriptor, and second is number of 
     return;
 }
 
+//Write data to an open file
 int mywrite(int lfd, char buf[], int nbytes)
 {
 	TRACE ("IN mywrite: %d \n", nbytes);
@@ -1603,6 +1759,7 @@ int mywrite(int lfd, char buf[], int nbytes)
     return tempnbyte - nbytes; //return how many bytes written.
 }
 
+//Write to an open file. This call makes sure the file is opened with correct permissions
 int iwrite(int lfd, char buf[], int nbytes)
 {
 	TRACE ("IN iwrite\n");
@@ -1625,7 +1782,8 @@ int iwrite(int lfd, char buf[], int nbytes)
     return mywrite(lfd, buf, nbytes);
 }
 
-void write_file() //if calling from main, pathname will contain file descriptor, parameter will contain buffer to be written. nbytes assumed length of buffer
+//Write to an open file. Front end for iwrite() and then mywrite()
+void write_file() 
 {
 	TRACE ("IN write_file\n");
 
@@ -1642,13 +1800,11 @@ void write_file() //if calling from main, pathname will contain file descriptor,
 	//free (buf); 
 }
 
-void cat_file(){
+//Print the contents of a file to screen
+void cat_file()
+{
 	TRACE ("IN cat_file\n");
-	/*
-		Open the file for read
-		read a chunk from it
-		print it to the screen
-	*/
+
 	char buf[BLKSIZE];
     int nbytes;
     int lfd;
@@ -1673,7 +1829,9 @@ void cat_file(){
     close_file(); //close file with Local File Descriptor in Pathname
 }
 
-void cp_file(){
+//Copy a file
+void cp_file()
+{
 	TRACE ("IN cp_file\n");
 
 	int sfd, dfd;
@@ -1729,12 +1887,12 @@ void cp_file(){
 	close_file();
 }
 
-void mv_file(){
+
+//Move a file
+void mv_file()
+{
 	TRACE ("IN mv_file\n");
-	/*
-		creat link in dest
-		remove entry in source	
-	*/
+
 	char save[256];
 
 	strcpy (save, pathname);
@@ -1744,41 +1902,50 @@ void mv_file(){
 	unlink();
 }
 
-void mount(){
+void mount()
+{
 	TRACE ("IN mount\n");
 	fprintf (stderr, "Error: This function is not implemented\n");
 }
 
-void unmount(){
+void unmount()
+{
 	TRACE ("IN unmount\n");
 	fprintf (stderr, "Error: This function is not implemented\n");
 }
 
-void cs(){
+void cs()
+{
 	TRACE ("IN cs\n");
 	fprintf (stderr, "Error: This function is not implemented\n");
 }
 
-void do_fork(){
+void do_fork()
+{
 	TRACE ("IN do_fork\n");
 	fprintf (stderr, "Error: This function is not implemented\n");
 }
 
-void do_ps(){
+void do_ps()
+{
 	TRACE ("IN do_ps\n");
 	fprintf (stderr, "Error: This function is not implemented\n");
 }
 
-void sync(){
+void sync()
+{
 	TRACE ("IN sync\n");
 	fprintf (stderr, "Error: This function is not implemented\n");
 }
 
-void quit(){
+//Quit the program
+void quit()
+{
 	TRACE ("QUITTING\n");
 
 	int i; 
 
+	//Check each of the in-memory inodes and put them away
 	for (i = 0; i < NMINODES; i++)
 	{
 		if (minode[i].refCount == 0 && minode[i].ino == 0)
@@ -1787,18 +1954,23 @@ void quit(){
 		iput(&(minode[i]));	
 	}
 
+	//Close the disk
 	close (dev);
 
 	exit(0);
 }
 
-void defa(){
+//Default command. Just spits out an error message if an invalid command was entered
+void defa()
+{
     fprintf(stderr, "Error: Invalid command. Please enter 'menu' for help.\n");
 }
 
+//Initialize the file system
 init ()
 {
 	TRACE ("IN INIT\n");
+	//Initialize the first two processes
 	proc[0].uid = 0;
 	proc[0].pid = 0;
 	proc[0].gid = 0;
@@ -1809,16 +1981,19 @@ init ()
 	proc[1].gid = 0;
 	proc[1].cwd = 0;
 
+	//Set the running process
 	running = &(proc[1]);
 
 	int i; 
 
+	//initialize the in-memory inodes
 	for (i = 0; i < NMINODES; i++)
 	{
 		minode[i].refCount = 0;
 		minode[i].ino = 0;
 	}
 
+	//Initialize the open file table
 	for (i = 0; i < NOFT; i++)
 	{
 		oftable[i].mode = -1;
@@ -1829,6 +2004,7 @@ init ()
 
 	root = 0;
 
+	//Initialize the function pointer table
     p[0] = menu;
     p[1] = make_dir;
     p[2] = change_dir;
@@ -1865,6 +2041,7 @@ init ()
     p[33] = 0;
 }
 
+//Main, where all the magic happens
 int main (int argc, char *argv[], char *env[])
 {
 	if (argc < 2)
@@ -1885,12 +2062,16 @@ int main (int argc, char *argv[], char *env[])
         line[strlen(line)-1] = 0;  // kill the \r char at end
         if (line[0]==0) continue;
 
+		//Parse the string into command, path, and parameters
         sscanf(line, "%s %s %64c", cname, pathname, parameter);
+		
+		// Get the command index from its name
+        int a = findCmd(cname); 
+		
+		//Call the function using the function pointer table
+        (*p[a]) ();  
 
-        int a = findCmd(cname); // map cname to an index
-
-        (*p[a]) (); //call the function from function pinter table 
-
+		//Clear out all the buffers
 		memset(line, 0, 128);
 		memset(cname, 0, 64);		
 		memset(pathname, 0, 256);

@@ -1,5 +1,3 @@
-
-/* type.h is ALSO available in samples/type.h  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -27,13 +25,13 @@ DIR   *dp;
 #define GDBLOCK           2
 #define ROOT_INODE        2
 
-// Default dir and regulsr file modes
+// Default dir and regular file modes
 #define DIR_MODE    0040775 
 #define FILE_MODE   0100644
 #define SUPER_MAGIC  0xEF53
 #define SUPER_USER        0
 
-// Proc status
+// Process status
 #define FREE              0
 #define READY             1
 #define RUNNING           2
