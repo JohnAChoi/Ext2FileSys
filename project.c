@@ -85,11 +85,11 @@ void menu(){
     printf("K.C. Fan Club FileSystem\n"
            "Please enter one of the following options:\n"
                  "Level One:\n"
-                 "menu mkdir chdir pwd ldir rmdir creat link unlink symlink rm chmod chown stat touch\n"
+                 "menu mkdir cd pwd ls rmdir creat link unlink symlink rm chmod chown stat touch\n"
                  "Level Two:\n"
                  "open close pfd lseek access read write cat cp mv\n"
-                 "Level Three:\n"
-                 "mount umount cs fork ps sync\n"
+                 //"Level Three:\n"
+                 //"mount umount cs fork ps sync\n"
                  "quit\n"
              );
 }
