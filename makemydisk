@@ -1,0 +1,10 @@
+#! /bin/sh
+
+mkfs mydisk 1440
+sudo mount -o loop mydisk /mnt
+mkdir /mnt/a
+mkdir /mnt/a/b
+mkdir /mnt/a/b/c
+mkdir /mnt/a/b/c/d
+mkdir /mnt/a/b/c/e
+sudo umount /mnt
